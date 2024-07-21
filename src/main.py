@@ -207,7 +207,7 @@ def download_audio(url: str, output_path: str, video_name: str, audio_name: str)
 def verify_claims_with_openai(claim: str) -> str:
     config = dotenv_values(".env")
     descriptions = (" ").join(scrape_additional_sources(claim)[0])
-    client = OpenAI(api_key="sk-None-lJ7keCd2wghtGycajsuST3BlbkFJSiNBUg5jWW9DFSqqxOzk")
+    client = OpenAI(api_key=config.get("OPENAI_API_KEY")) # for demo we can hardcode api key i think
    
     response = client.chat.completions.create(
         model="gpt-4",
