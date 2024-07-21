@@ -19,9 +19,17 @@ from bs4 import BeautifulSoup
 from pytubefix import YouTube
 from pytubefix.cli import on_progress
 
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
+from bs4 import BeautifulSoup
+import time
+
 app = FastAPI()
 nlp = spacy.load("en_core_web_sm")
-origins = ["https://localhost:5173"]
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -67,16 +75,38 @@ def query_fact_check_api(claim):
 
 def scrape_additional_sources(claim):
     search_url = f"https://www.google.com/search?q={claim.replace(' ', '+')}"
-    response = requests.get(search_url)
-    soup = BeautifulSoup(response.text, "html.parser")
+    options = Options()
+    options.add_argument('--headless')  # Run in headless mode
+    
+    service = ChromeService(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
 
-    for link in soup.find_all("a"):
-        href = link.get("href")
-        if href and "url?q=" in href and not "webcache" in href:
-            url = href.split("url?q=")[1].split("&")[0]
-            print(f"Scraped URL: {url}")
-            # Additional scraping and NLP can be done on the target page
+    # Fetch the webpage
+    driver.get(search_url)
+    time.sleep(5)  # Wait for the dynamic content to load
 
+    # Get the rendered HTML content
+    rendered_html = driver.page_source
+
+    # Close the browser
+    driver.quit()
+
+    # Parse with BeautifulSoup
+    soup = BeautifulSoup(rendered_html, 'html.parser')
+
+    # for description in soup.find_all("a", {"jsname":"UWckNb"}, limit=5):
+    descriptions = []
+    links = []
+    for link in soup.find_all("a", {"jsname":"UWckNb"}, limit=5):
+        url = link['href']
+        links.append(url)
+
+    
+    for description in soup.find_all("div", {"class":"VwiC3b yXK7lf lVm3ye r025kc hJNv6b Hdw6tb"}, limit=5):
+        text = description.get_text()
+        descriptions.append(text)
+
+    return [descriptions, links]
 
 def verify_claim(claim: str):
     # Query the Google Fact Check Tools API
@@ -173,6 +203,25 @@ def download_audio(url: str, output_path: str, video_name: str, audio_name: str)
     extract_audio_from_mp4(os.path.join(output_path, video_name), os.path.join(output_path, audio_name))
 
 
+# Verify claims using OpenAI
+def verify_claims_with_openai(claim: str) -> str:
+    config = dotenv_values(".env")
+    descriptions = (" ").join(scrape_additional_sources(claim)[0])
+    client = OpenAI(api_key="sk-None-lJ7keCd2wghtGycajsuST3BlbkFJSiNBUg5jWW9DFSqqxOzk")
+   
+    response = client.chat.completions.create(
+        model="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are a fact-checking assistant. Verify the following claim based on the following descriptions from reliable sources and provide a response. Descriptions: (" + descriptions + ")"},
+            {"role": "user", "content": claim}
+        ]
+    )
+
+    verification = response.choices[0].message.content
+    
+    return verification
+
+
 def parse_audio(audio_path: str) -> list[str]:
     """Parse audio from file in `audio_path using OpenAI Whisper`"""
     config = dotenv_values(".env")
@@ -228,6 +277,13 @@ def transcribe_url(video_url: str):
 
     return TranscribedAudio(segments=audio["segments"], aggregated=audio["text"])
 
+
+def main():
+    response = verify_claims_with_openai("There are 400 Starbucks locations in the world")
+    print(response)
+
+if __name__ == "__main__":
+    main()
 
 # @app.post("/fact_check")
 # def fact_check(speech: Speech) -> FactCheckResult:
