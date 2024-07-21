@@ -9,12 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from moviepy.editor import VideoFileClip
 from fastapi import FastAPI, UploadFile, HTTPException
 from pysbd.utils import PySBDFactory
-import spacy
 from pydantic import BaseModel
 from dotenv import dotenv_values
-import requests
 from transformers import pipeline
 from bs4 import BeautifulSoup
+import requests
+import spacy
 
 from pytubefix import YouTube
 from pytubefix.cli import on_progress
@@ -33,30 +33,25 @@ app.add_middleware(
 GOOGLE_FACT_CHECK_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 
 
-def extract_claims(text: str):
-    doc = nlp(text)
-    sentences = [sent.text for sent in doc.sents]
-    entities = [(ent.text, ent.label_) for ent in doc.ents]
-    # print("Sentences: ", sentences)
-    # print("Entities: ", entities)
+class TranscribedAudio(BaseModel):
+    segments: list[dict]
+    aggregated: str
 
-    claim_keywords = ["claims", "states", "reports", "says"]
-    claims = [sentence for sentence in sentences if any(keyword in sentence for keyword in claim_keywords)]
-    # print("Claims:", claims)
 
-    claim_contexts = {}
+class Speech(BaseModel):
+    text: list[dict]
 
-    for claim in claims:
-        context_entities = [ent for ent in entities if ent[0] in claim]
-        context_sentences = [
-            sent for sent in sentences if sent != claim and any(ent[0] in sent for ent in context_entities)
-        ]
-        claim_contexts[claim] = {"entities": context_entities, "context_sentences": context_sentences}
 
-    for claim, context in claim_contexts.items():
-        print(f"Claim: {claim}")
-        print(f"Entities: {context['entities']}")
-        print(f"Context Sentences: {context['context_sentences']}")
+class Decision(BaseModel):
+    verified: list[dict]
+    unverified: list[dict]
+    false: list[dict]
+
+
+class FactCheckResult(BaseModel):
+    status: int
+    message: str
+    results: Decision
 
 
 def query_fact_check_api(claim):
@@ -75,10 +70,9 @@ def scrape_additional_sources(claim):
         if href and "url?q=" in href and not "webcache" in href:
             url = href.split("url?q=")[1].split("&")[0]
             print(f"Scraped URL: {url}")
-            # Additional scraping and NLP can be done on the target page
 
 
-def verify_claim(claim: str):
+def retrieve_sources(claim: str):
     # Query the Google Fact Check Tools API
     fact_check_results = query_fact_check_api(claim)
     # print(json.dumps(fact_check_results, indent=2))
@@ -113,33 +107,32 @@ def compare_claim_with_source(claim, source_text):
     print(f"Similarity: {similarity}")
 
     return similarity > 0.5
-    # if similarity > 0.8:  # Threshold for considering a match
-    #     print(f"The claim '{claim}' is likely true based on the source.")
-    # else:
-    #     print(f"The claim '{claim}' does not match well with the source.")
 
 
-def process_and_verify_claims():
-    doc = nlp(transcribed_text)
+def process_and_verify_claims(speech: Speech):
 
-    sentences = [sent.text for sent in doc.sents]
-    claim_keywords = ["claim", "claims", "states", "reports", "says"]
-    claims = [sentence for sentence in sentences if any(keyword in sentence for keyword in claim_keywords)]
+    claim_keywords = ["claim", "claims", "states", "reports", "says", "%"]
+    claims = [segment for segment in speech.segments if any(keyword in segment for keyword in claim_keywords)]
     claim_results = {"verified": [], "unverified": [], "false": []}
 
     for claim in claims:
         print(f"Processing claim: {claim}")
-        results = verify_claim(claim)
-        verified = False
-        reviews = []
-        for source in results:
+        sources = retrieve_sources(claim)
+        support, contradict, reviews = [], [], []
+        for source in sources:
             for review in source["claimReview"]:
-                verified = max(compare_claim_with_source(claim, review["textualRating"]), verified)
+                if compare_claim_with_source(claim, review["textualRating"]):
+                    support.append(review)
+                else:
+                    contradict.append(review)
                 reviews.append(review)
-        if verified:
+
+        if (len(support) > 0 and len(contradict) > 0) or (len(support) == 0 and len(contradict) == 0):
+            claim_results["unverified"].append({"claim": claim, "sources": reviews})
+        elif len(support) > 0:
             claim_results["verified"].append({"claim": claim, "sources": reviews})
         else:
-            claim_results["unverified"].append({"claim": claim, "sources": reviews})
+            claim_results["false"].append({"claim": claim, "sources": reviews})
 
     return claim_results
 
@@ -178,7 +171,7 @@ def parse_audio(audio_path: str) -> list[str]:
     config = dotenv_values(".env")
 
     load_dotenv()
-    with open(audio_path, "rb") as f:
+    with open("audio.mp3", "rb") as f:
         client = OpenAI(api_key=config.get("OPENAI_API_KEY"))
         transcript = client.audio.transcriptions.create(
             file=f,
@@ -190,27 +183,6 @@ def parse_audio(audio_path: str) -> list[str]:
 
     aggregated = ".".join([el["text"] for el in transcript.segments])
     return {"segments": transcript.segments, "text": aggregated}
-
-
-class TranscribedAudio(BaseModel):
-    segments: list[dict]
-    aggregated: str
-
-
-class Speech(BaseModel):
-    text: list[dict]
-
-
-class Decision(BaseModel):
-    verified: list[dict]
-    unverified: list[dict]
-    false: list[dict]
-
-
-class FactCheckResult(BaseModel):
-    status: int
-    message: str
-    results: Decision
 
 
 @app.post("/transcribe_url")
@@ -229,7 +201,7 @@ def transcribe_url(video_url: str):
     return TranscribedAudio(segments=audio["segments"], aggregated=audio["text"])
 
 
-# @app.post("/fact_check")
-# def fact_check(speech: Speech) -> FactCheckResult:
-#     process_and_verify_claims(speech.text)
-#     return FactCheckResult(status=200, message="success", results=Decision(facts=["hello"], lies=["world"]))
+@app.post("/fact_check")
+def fact_check(speech: Speech) -> FactCheckResult:
+    process_and_verify_claims(speech)
+    return FactCheckResult(status=200, message="success", results=Decision(facts=["hello"], lies=["world"]))
