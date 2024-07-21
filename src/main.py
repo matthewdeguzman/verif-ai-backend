@@ -1,5 +1,9 @@
 import shutil
+import json
 import os
+
+from dotenv import load_dotenv
+from openai import OpenAI
 
 from moviepy.editor import VideoFileClip
 from fastapi import FastAPI, UploadFile, HTTPException
@@ -8,11 +12,131 @@ import spacy
 from pydantic import BaseModel
 from dotenv import dotenv_values
 import requests
+from transformers import pipeline
+from bs4 import BeautifulSoup
 
 from pytubefix import YouTube
 from pytubefix.cli import on_progress
 
 app = FastAPI()
+nlp = spacy.load("en_core_web_sm")
+
+GOOGLE_FACT_CHECK_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
+
+
+def extract_claims(text: str):
+    doc = nlp(text)
+    sentences = [sent.text for sent in doc.sents]
+    entities = [(ent.text, ent.label_) for ent in doc.ents]
+    # print("Sentences: ", sentences)
+    # print("Entities: ", entities)
+
+    claim_keywords = ["claims", "states", "reports", "says"]
+    claims = [sentence for sentence in sentences if any(keyword in sentence for keyword in claim_keywords)]
+    # print("Claims:", claims)
+
+    claim_contexts = {}
+
+    for claim in claims:
+        context_entities = [ent for ent in entities if ent[0] in claim]
+        context_sentences = [
+            sent for sent in sentences if sent != claim and any(ent[0] in sent for ent in context_entities)
+        ]
+        claim_contexts[claim] = {"entities": context_entities, "context_sentences": context_sentences}
+
+    for claim, context in claim_contexts.items():
+        print(f"Claim: {claim}")
+        print(f"Entities: {context['entities']}")
+        print(f"Context Sentences: {context['context_sentences']}")
+
+
+def query_fact_check_api(claim):
+    params = {"key": os.getenv("GOOGLE_API_KEY"), "query": claim, "languageCode": "en"}
+    response = requests.get(GOOGLE_FACT_CHECK_URL, params=params)
+    return response.json()
+
+
+def scrape_additional_sources(claim):
+    search_url = f"https://www.google.com/search?q={claim.replace(' ', '+')}"
+    response = requests.get(search_url)
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    for link in soup.find_all("a"):
+        href = link.get("href")
+        if href and "url?q=" in href and not "webcache" in href:
+            url = href.split("url?q=")[1].split("&")[0]
+            print(f"Scraped URL: {url}")
+            # Additional scraping and NLP can be done on the target page
+
+
+def verify_claim(claim: str):
+    # Query the Google Fact Check Tools API
+    fact_check_results = query_fact_check_api(claim)
+    # print(json.dumps(fact_check_results, indent=2))
+    supported_publishers = ["full fact", "africa check", "snopes", "the new york times", "politifact", "usa today"]
+    reliable_claims = []
+
+    if "claims" in fact_check_results:
+        for result in fact_check_results["claims"]:
+            # print(f"Claim: {result['text']}")
+            # print(f"Claimant: {result.get('claimant')}")
+            # print(f"Claim Date: {result.get('claimDate')}")
+            for review in result["claimReview"]:
+                if review["publisher"]["name"].lower() in supported_publishers:
+                    reliable_claims.append(result)
+                # print(f"Publisher: {review['publisher']['name']}")
+                # print(f"Title: {review['title']}")
+                # print(f"URL: {review['url']}")
+                # print(f"Rating: {review['textualRating']}")
+                # print()
+    else:
+        scrape_additional_sources(claim)
+
+    # print(f"Filtered sources:", json.dumps(reliable_claims, indent=2))
+    return reliable_claims
+
+
+def compare_claim_with_source(claim, source_text):
+    doc1 = nlp(claim)
+    doc2 = nlp(source_text)
+
+    similarity = doc1.similarity(doc2)
+    print(f"Similarity: {similarity}")
+
+    return similarity > 0.5
+    # if similarity > 0.8:  # Threshold for considering a match
+    #     print(f"The claim '{claim}' is likely true based on the source.")
+    # else:
+    #     print(f"The claim '{claim}' does not match well with the source.")
+
+
+def process_and_verify_claims(transcribed_text):
+    doc = nlp(transcribed_text)
+
+    sentences = [sent.text for sent in doc.sents]
+    claim_keywords = ["claim", "claims", "states", "reports", "says"]
+    claims = [sentence for sentence in sentences if any(keyword in sentence for keyword in claim_keywords)]
+    claim_results = {"verified": [], "unverified": [], "false": []}
+
+    for claim in claims:
+        print(f"Processing claim: {claim}")
+        results = verify_claim(claim)
+        verified = False
+        reviews = []
+        for source in results:
+            for review in source["claimReview"]:
+                verified = max(compare_claim_with_source(claim, review["textualRating"]), verified)
+                reviews.append(review)
+        if verified:
+            claim_results["verified"].append({"claim": claim, "sources": reviews})
+        else:
+            claim_results["unverified"].append({"claim": claim, "sources": reviews})
+
+    return claim_results
+
+
+# results = process_and_verify_claims("i claim the world is not flat")
+# print(json.dumps(results, indent=2))
 
 
 def extract_audio_from_mp4(mp4_file_path, output_audio_path):
@@ -47,34 +171,35 @@ def download_audio(url: str, output_path: str, filename: str):
 def parse_audio(audio_path: str) -> list[str]:
     """Parse audio from file in `audio_path using OpenAI Whisper`"""
     config = dotenv_values(".env")
-    API_URL = "https://api-inference.huggingface.co/models/openai/whisper-large-v3"
-    headers = {"Authorization": f"Bearer {config['HF_TOKEN']}"}
 
-    def query(filename):
-        with open(filename, "rb") as f:
-            data = f.read()
-        response = requests.post(API_URL, headers=headers, data=data)
-        return response.json()
+    load_dotenv()
+    with open("audio.mp3", "rb") as f:
+        client = OpenAI(api_key=config.get("OPENAI_API_KEY"))
+        transcript = client.audio.transcriptions.create(
+            file=f,
+            model="whisper-1",
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+            language="en",
+        )
 
-    output = query(audio_path)
-    print(output)
-    text = output["text"]
-    nlp = spacy.load("en_core_web_sm")
-    return [str(i) for i in nlp(text).sents]
+    aggregated = ".".join([el["text"] for el in transcript.segments])
+    return {"segments": transcript.segments, "text": aggregated}
 
 
-class TranscribeResult(BaseModel):
-    status: int
-    message: str
-    text: list[str]
+class TranscribedAudio(BaseModel):
+    segments: list[dict]
+    aggregated: str
 
 
 # class Speech(BaseModel):
 #     text: list[str]
 
+
 # class Decision(BaseModel):
-#     facts: list[str]
-#     lies: list[str]
+#     verified: list[str]
+#     unverified: list[str]
+
 
 # class FactCheckResult(BaseModel):
 #     status: int
@@ -82,42 +207,20 @@ class TranscribeResult(BaseModel):
 #     results: Decision
 
 
-def _transcribe(audio_path: str, output_dir: str) -> TranscribeResult:
-    text = parse_audio(audio_path)
-
-    # Clean up
-    shutil.rmtree(output_dir)
-
-    return TranscribeResult(status=200, message="success", text=text)
-
-
 @app.post("/transcribe_url")
-def transcribe_url(video_url: str) -> TranscribeResult:
+def transcribe_url(video_url: str):
     output_dir = "./downloaded_media"
     video_name = "video.mp4"
     audio_path = os.path.join(output_dir, video_name)
     download_audio(video_url, output_path=output_dir, filename=video_name)
 
-    return _transcribe(audio_path=audio_path, output_dir=output_dir)
+    audio = parse_audio(audio_path)
+    print(audio)
 
+    # Clean up
+    shutil.rmtree(output_dir)
 
-@app.post("/transcribe_file")
-async def transcribe_file(file: UploadFile) -> TranscribeResult:
-    output_dir = "./downloaded_media"
-    audio_path = os.path.join(output_dir, "audio.wav")
-    video_path = os.path.join(output_dir, "video.mp4")
-
-    if file.filename[-4:] != ".mp4":
-        raise HTTPException(
-            status_code=400, detail=f"Invalid file extension: '{file.filename[:-4]}'. Only .mp4 files are allowed."
-        )
-
-    contents = await file.read()
-    with open(video_path, "wb") as f:
-        f.write(contents)
-
-    extract_audio_from_mp4(mp4_file_path=video_path, output_audio_path=audio_path)
-    return _transcribe(audio_path=audio_path, output_dir=output_dir)
+    return TranscribedAudio(segments=audio["segments"], aggregated=audio["text"])
 
 
 # @app.post("/fact_check")
