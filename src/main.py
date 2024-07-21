@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from fastapi.middleware.cors import CORSMiddleware
 from moviepy.editor import VideoFileClip
 from fastapi import FastAPI, UploadFile, HTTPException
 from pysbd.utils import PySBDFactory
@@ -20,6 +21,14 @@ from pytubefix.cli import on_progress
 
 app = FastAPI()
 nlp = spacy.load("en_core_web_sm")
+origins = ["https://localhost:5173"]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 GOOGLE_FACT_CHECK_URL = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 
@@ -110,7 +119,7 @@ def compare_claim_with_source(claim, source_text):
     #     print(f"The claim '{claim}' does not match well with the source.")
 
 
-def process_and_verify_claims(transcribed_text):
+def process_and_verify_claims():
     doc = nlp(transcribed_text)
 
     sentences = [sent.text for sent in doc.sents]
@@ -192,19 +201,20 @@ class TranscribedAudio(BaseModel):
     aggregated: str
 
 
-# class Speech(BaseModel):
-#     text: list[str]
+class Speech(BaseModel):
+    text: list[dict]
 
 
-# class Decision(BaseModel):
-#     verified: list[str]
-#     unverified: list[str]
+class Decision(BaseModel):
+    verified: list[dict]
+    unverified: list[dict]
+    false: list[dict]
 
 
-# class FactCheckResult(BaseModel):
-#     status: int
-#     message: str
-#     results: Decision
+class FactCheckResult(BaseModel):
+    status: int
+    message: str
+    results: Decision
 
 
 @app.post("/transcribe_url")
@@ -225,4 +235,5 @@ def transcribe_url(video_url: str):
 
 # @app.post("/fact_check")
 # def fact_check(speech: Speech) -> FactCheckResult:
+#     process_and_verify_claims(speech.text)
 #     return FactCheckResult(status=200, message="success", results=Decision(facts=["hello"], lies=["world"]))
