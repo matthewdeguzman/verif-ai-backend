@@ -74,6 +74,9 @@ def query_fact_check_api(claim):
 
 
 def scrape_additional_sources(claim):
+    return "hi"
+
+def get_descriptions(claim):
     search_url = f"https://www.google.com/search?q={claim.replace(' ', '+')}"
     options = Options()
     options.add_argument('--headless')  # Run in headless mode
@@ -96,17 +99,40 @@ def scrape_additional_sources(claim):
 
     # for description in soup.find_all("a", {"jsname":"UWckNb"}, limit=5):
     descriptions = []
+
+    for description in soup.find_all("div", {"class":"VwiC3b yXK7lf lVm3ye r025kc hJNv6b Hdw6tb"}, limit=5):
+        text = description.get_text()
+        descriptions.append(text)
+
+    return descriptions
+
+def get_source_links(claim):
+    search_url = f"https://www.google.com/search?q={claim.replace(' ', '+')}"
+    options = Options()
+    options.add_argument('--headless')  # Run in headless mode
+    
+    service = ChromeService(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+
+    # Fetch the webpage
+    driver.get(search_url)
+    time.sleep(5)  # Wait for the dynamic content to load
+
+    # Get the rendered HTML content
+    rendered_html = driver.page_source
+
+    # Close the browser
+    driver.quit()
+
+    # Parse with BeautifulSoup
+    soup = BeautifulSoup(rendered_html, 'html.parser')
+
     links = []
     for link in soup.find_all("a", {"jsname":"UWckNb"}, limit=5):
         url = link['href']
         links.append(url)
 
-    
-    for description in soup.find_all("div", {"class":"VwiC3b yXK7lf lVm3ye r025kc hJNv6b Hdw6tb"}, limit=5):
-        text = description.get_text()
-        descriptions.append(text)
-
-    return [descriptions, links]
+    return links
 
 def verify_claim(claim: str):
     # Query the Google Fact Check Tools API
@@ -206,7 +232,7 @@ def download_audio(url: str, output_path: str, video_name: str, audio_name: str)
 # Verify claims using OpenAI
 def verify_claims_with_openai(claim: str) -> str:
     config = dotenv_values(".env")
-    descriptions = (" ").join(scrape_additional_sources(claim)[0])
+    descriptions = (" ").join(get_descriptions(claim))
     client = OpenAI(api_key=config.get("OPENAI_API_KEY")) # for demo we can hardcode api key i think
    
     response = client.chat.completions.create(
@@ -279,8 +305,11 @@ def transcribe_url(video_url: str):
 
 
 def main():
-    response = verify_claims_with_openai("There are 400 Starbucks locations in the world")
+    claim = "Eating ice cream does not help remedy your cold"
+    response = verify_claims_with_openai(claim)
+    links = get_source_links(claim)
     print(response)
+    print(links)
 
 if __name__ == "__main__":
     main()
