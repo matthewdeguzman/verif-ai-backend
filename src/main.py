@@ -163,18 +163,14 @@ def extract_audio_from_mp4(mp4_file_path, output_audio_path):
     audio_clip.close()
 
 
-def download_audio(url: str, output_path: str, filename: str):
+def download_audio(url: str, output_path: str, video_name: str, audio_name: str):
     """Download audio from url."""
     yt = YouTube(url, on_progress_callback=on_progress)
     print(yt.title)
     ys = yt.streams.get_highest_resolution()
-    ys.download(output_path=output_path, filename=filename)
+    ys.download(output_path=output_path, filename=video_name)
 
-    # Example usage
-    mp4_file_path = "video.mp4"
-    output_audio_path = "audio.wav"  # You can also use .wav or other supported formats
-
-    extract_audio_from_mp4(mp4_file_path, output_audio_path)
+    extract_audio_from_mp4(os.path.join(output_path, video_name), os.path.join(output_path, audio_name))
 
 
 def parse_audio(audio_path: str) -> list[str]:
@@ -221,8 +217,8 @@ class FactCheckResult(BaseModel):
 def transcribe_url(video_url: str):
     output_dir = "./downloaded_media"
     video_name = "video.mp4"
-    audio_path = os.path.join(output_dir, video_name)
-    download_audio(video_url, output_path=output_dir, filename=video_name)
+    audio_path = os.path.join(output_dir, "audio.mp3")
+    download_audio(video_url, output_path=output_dir, video_name=video_name, audio_name="audio.mp3")
 
     audio = parse_audio(audio_path)
     print(audio)
