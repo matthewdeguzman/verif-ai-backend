@@ -7,8 +7,7 @@ from openai import OpenAI
 
 from fastapi.middleware.cors import CORSMiddleware
 from moviepy.editor import VideoFileClip
-from fastapi import FastAPI, UploadFile, HTTPException
-from pysbd.utils import PySBDFactory
+from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import dotenv_values
 from transformers import pipeline
