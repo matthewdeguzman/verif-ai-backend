@@ -169,28 +169,25 @@ def compare_claim_with_source(claim, source_text):
 
 def process_and_verify_claims(speech: Speech):
 
-    claim_keywords = ["claim", "claims", "states", "reports", "says", "%"]
-    claims = [segment for segment in speech.segments if any(keyword in segment for keyword in claim_keywords)]
-    claim_results = {"verified": [], "unverified": [], "false": []}
+    sentences = [sent.text for sent in doc.sents]
+    claim_keywords = ["claim", "claims", "states", "reports", "says"]
+    claims = [sentence for sentence in sentences if any(keyword in sentence for keyword in claim_keywords)]
+    claim_results = {"verified": [], "uncertain": [], "false": []}
 
     for claim in claims:
         print(f"Processing claim: {claim}")
-        sources = retrieve_sources(claim)
-        support, contradict, reviews = [], [], []
-        for source in sources:
-            for review in source["claimReview"]:
-                if compare_claim_with_source(claim, review["textualRating"]):
-                    support.append(review)
-                else:
-                    contradict.append(review)
-                reviews.append(review)
+        results = verify_claims_with_openai(claim)
+        links = get_source_links(claim)
+  
+        claimType = results.split(',')[0]
 
-        if (len(support) > 0 and len(contradict) > 0) or (len(support) == 0 and len(contradict) == 0):
-            claim_results["unverified"].append({"claim": claim, "sources": reviews})
-        elif len(support) > 0:
-            claim_results["verified"].append({"claim": claim, "sources": reviews})
+        if claimType == 'True':
+            claim_results["verified"].append({"claim": claim, "sources": links, "explanation": results})
+        elif claimType == 'False':
+            claim_results["false"].append({"claim": claim, "sources": links, "explanation": results})
         else:
-            claim_results["false"].append({"claim": claim, "sources": reviews})
+            claim_results["uncertain"].append({"claim": claim, "sources": links, "explanation": results})
+    
 
     return claim_results
 
@@ -228,12 +225,12 @@ def download_audio(url: str, output_path: str, video_name: str, audio_name: str)
 def verify_claims_with_openai(claim: str) -> str:
     config = dotenv_values(".env")
     descriptions = (" ").join(get_descriptions(claim))
-    client = OpenAI(api_key=config.get("OPENAI_API_KEY")) # for demo we can hardcode api key i think
+    client = OpenAI(api_key=config.get("OPENAI_API_KEY"))
    
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
-            {"role": "system", "content": "You are a fact-checking assistant. Verify the following claim based on the following descriptions from reliable sources and provide a response. Descriptions: (" + descriptions + ")"},
+            {"role": "system", "content": "You are a fact-checking assistant. Verify the following claim based on the following descriptions from reliable sources and provide a response. The first word of the response should be True, False, or Uncertain followed by a comma, Descriptions: (" + descriptions + ")"},
             {"role": "user", "content": claim}
         ]
     )
@@ -279,7 +276,7 @@ def transcribe_url(video_url: str):
 
 
 def main():
-    claim = "Eating ice cream does not help remedy your cold"
+    claim = "California does not experience many earthquakes"
     response = verify_claims_with_openai(claim)
     links = get_source_links(claim)
     print(response)
