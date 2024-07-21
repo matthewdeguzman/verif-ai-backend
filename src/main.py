@@ -27,7 +27,10 @@ from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 import time
 
+load_dotenv()
+
 app = FastAPI()
+client = OpenAI()
 nlp = spacy.load("en_core_web_sm")
 origins = ["*"]
 app.add_middleware(
@@ -68,14 +71,11 @@ def query_fact_check_api(claim):
     return response.json()
 
 
-def scrape_additional_sources(claim):
-    return "hi"
-
 def get_descriptions(claim):
     search_url = f"https://www.google.com/search?q={claim.replace(' ', '+')}"
     options = Options()
-    options.add_argument('--headless')  # Run in headless mode
-    
+    options.add_argument("--headless")  # Run in headless mode
+
     service = ChromeService(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
 
@@ -90,29 +90,29 @@ def get_descriptions(claim):
     driver.quit()
 
     # Parse with BeautifulSoup
-    soup = BeautifulSoup(rendered_html, 'html.parser')
+    soup = BeautifulSoup(rendered_html, "html.parser")
 
     # for description in soup.find_all("a", {"jsname":"UWckNb"}, limit=5):
     descriptions = []
 
-    for description in soup.find_all("div", {"class":"VwiC3b yXK7lf lVm3ye r025kc hJNv6b Hdw6tb"}, limit=5):
+    for description in soup.find_all("div", {"class": "VwiC3b yXK7lf lVm3ye r025kc hJNv6b Hdw6tb"}, limit=5):
         text = description.get_text()
         descriptions.append(text)
 
     return descriptions
 
+
 def get_source_links(claim):
     search_url = f"https://www.google.com/search?q={claim.replace(' ', '+')}"
     options = Options()
-    options.add_argument('--headless')  # Run in headless mode
-    
+    options.add_argument("--headless")  # Run in headless mode
+
     service = ChromeService(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
 
     # Fetch the webpage
     driver.get(search_url)
     time.sleep(5)  # Wait for the dynamic content to load
-
 
     # Get the rendered HTML content
     rendered_html = driver.page_source
@@ -121,79 +121,14 @@ def get_source_links(claim):
     driver.quit()
 
     # Parse with BeautifulSoup
-    soup = BeautifulSoup(rendered_html, 'html.parser')
+    soup = BeautifulSoup(rendered_html, "html.parser")
 
     links = []
-    for link in soup.find_all("a", {"jsname":"UWckNb"}, limit=5):
-        url = link['href']
+    for link in soup.find_all("a", {"jsname": "UWckNb"}, limit=5):
+        url = link["href"]
         links.append(url)
 
     return links
-
-def retrieve_sources(claim: str):
-    # Query the Google Fact Check Tools API
-    fact_check_results = query_fact_check_api(claim)
-    # print(json.dumps(fact_check_results, indent=2))
-    supported_publishers = ["full fact", "africa check", "snopes", "the new york times", "politifact", "usa today"]
-    reliable_claims = []
-
-    if "claims" in fact_check_results:
-        for result in fact_check_results["claims"]:
-            # print(f"Claim: {result['text']}")
-            # print(f"Claimant: {result.get('claimant')}")
-            # print(f"Claim Date: {result.get('claimDate')}")
-            for review in result["claimReview"]:
-                if review["publisher"]["name"].lower() in supported_publishers:
-                    reliable_claims.append(result)
-                # print(f"Publisher: {review['publisher']['name']}")
-                # print(f"Title: {review['title']}")
-                # print(f"URL: {review['url']}")
-                # print(f"Rating: {review['textualRating']}")
-                # print()
-    else:
-        scrape_additional_sources(claim)
-
-    # print(f"Filtered sources:", json.dumps(reliable_claims, indent=2))
-    return reliable_claims
-
-
-def compare_claim_with_source(claim, source_text):
-    doc1 = nlp(claim)
-    doc2 = nlp(source_text)
-
-    similarity = doc1.similarity(doc2)
-    print(f"Similarity: {similarity}")
-
-    return similarity > 0.5
-
-
-def process_and_verify_claims(speech: Speech):
-
-    sentences = [sent.text for sent in doc.sents]
-    claim_keywords = ["claim", "claims", "states", "reports", "says"]
-    claims = [sentence for sentence in sentences if any(keyword in sentence for keyword in claim_keywords)]
-    claim_results = {"verified": [], "uncertain": [], "false": []}
-
-    for claim in claims:
-        print(f"Processing claim: {claim}")
-        results = verify_claims_with_openai(claim)
-        links = get_source_links(claim)
-  
-        claimType = results.split(',')[0]
-
-        if claimType == 'True':
-            claim_results["verified"].append({"claim": claim, "sources": links, "explanation": results})
-        elif claimType == 'False':
-            claim_results["false"].append({"claim": claim, "sources": links, "explanation": results})
-        else:
-            claim_results["uncertain"].append({"claim": claim, "sources": links, "explanation": results})
-    
-
-    return claim_results
-
-
-# results = process_and_verify_claims("i claim the world is not flat")
-# print(json.dumps(results, indent=2))
 
 
 def extract_audio_from_mp4(mp4_file_path, output_audio_path):
@@ -223,20 +158,23 @@ def download_audio(url: str, output_path: str, video_name: str, audio_name: str)
 
 # Verify claims using OpenAI
 def verify_claims_with_openai(claim: str) -> str:
-    config = dotenv_values(".env")
     descriptions = (" ").join(get_descriptions(claim))
-    client = OpenAI(api_key=config.get("OPENAI_API_KEY"))
-   
+
     response = client.chat.completions.create(
         model="gpt-4",
         messages=[
-            {"role": "system", "content": "You are a fact-checking assistant. Verify the following claim based on the following descriptions from reliable sources and provide a response. The first word of the response should be True, False, or Uncertain followed by a comma, Descriptions: (" + descriptions + ")"},
-            {"role": "user", "content": claim}
-        ]
+            {
+                "role": "system",
+                "content": "You are a fact-checking assistant. Verify the following claim based on the following descriptions from reliable sources and provide a response. The first word of the response should be True, False, or Uncertain followed by a comma, Descriptions: ("
+                + descriptions
+                + ")",
+            },
+            {"role": "user", "content": claim},
+        ],
     )
 
     verification = response.choices[0].message.content
-    
+
     return verification
 
 
@@ -244,9 +182,7 @@ def parse_audio(audio_path: str) -> list[str]:
     """Parse audio from file in `audio_path using OpenAI Whisper`"""
     config = dotenv_values(".env")
 
-    load_dotenv()
-    with open("audio.mp3", "rb") as f:
-        client = OpenAI(api_key=config.get("OPENAI_API_KEY"))
+    with open(audio_path, "rb") as f:
         transcript = client.audio.transcriptions.create(
             file=f,
             model="whisper-1",
@@ -259,7 +195,101 @@ def parse_audio(audio_path: str) -> list[str]:
     return {"segments": transcript.segments, "text": aggregated}
 
 
-@app.post("/transcribe_url")
+def is_claim(sentence: str):
+    prompt = """I will give you a sentence, and I want you to tell me whether it is a claim or not a claim. I don't care if you think the sentence is false, just focus on if it is a sentence that someone is claiming to be a fact. If you are not sure, then say "False". If you are sure, then say "True". I do not want you to make things up. Here are some examples.
+
+    Sentence: "I believe that water is unhealthy for you"
+    Is Claim: True
+
+    Sentence: "Good morning, how are you today?"
+    Is Claim: False
+
+    Sentence: "The cheese pizza is the worst option on the menu"
+    Is Claim: False
+
+    Sentence: "According to the Wall Street Journal, you said that elephants are the coolest animals on the planet"
+    Is Claim: True
+
+    Sentence: "17% of people in Florida were born without bones"
+    Is Claim: True
+
+    Sentence: "Lebron James is a white man"
+    Is Claim: True
+
+    Sentence: "The pope lives in Nevada"
+    Is Claim: True
+
+    Sentence: "Smoking a Cigar every day is very healthy for you"
+    Is Claim True
+
+    Sentence: "I love drinking wine, I think it's the best thing in the world"
+    Is Claim: False
+
+    Sentence: "{sentence}"
+    Is Claim:"""
+
+    response = client.completions.create(
+        model="gpt-3.5-turbo-instruct",
+        prompt=prompt.format(sentence=sentence),
+        temperature=1,
+        max_tokens=256,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
+    )
+    text = response.choices[0].text.strip()
+    return text.lower() == "true"
+
+
+def verify_claim(claim: str):
+
+    print(f"Processing claim: {claim}")
+    links = get_source_links(claim)
+    results = verify_claims_with_openai(claim)
+
+    claimType = results.split(",")[0]
+
+    if claimType == "True":
+        status = "verified"
+        # claim_results["verified"].append({"claim": claim, "sources": links, "explanation": results})
+    elif claimType == "False":
+        status = "false"
+    else:
+        status = "uncertain"
+
+    return status, links, results
+
+
+def _fact_check(text: list[dict]):
+    results = []
+    for claim in text:
+        if is_claim(claim["text"]):
+            claim_type, links, result = verify_claim(claim["text"])
+            results.append(
+                {
+                    "text": claim["text"],
+                    "claimType": claim_type,
+                    "sources": links,
+                    "textualReason": result,
+                    "timeStampStart": claim["start"],
+                    "timeStampEnd": claim["end"],
+                }
+            )
+        else:
+            results.append(
+                {
+                    "text": claim["text"],
+                    "claimType": "",
+                    "sources": [],
+                    "textualReason": "",
+                    "timeStampStart": claim["start"],
+                    "timeStampEnd": claim["end"],
+                }
+            )
+    print(json.dumps(results, indent=2))
+    return results
+
+
 def transcribe_url(video_url: str):
     output_dir = "./downloaded_media"
     video_name = "video.mp4"
@@ -272,21 +302,10 @@ def transcribe_url(video_url: str):
     # Clean up
     shutil.rmtree(output_dir)
 
-    return TranscribedAudio(segments=audio["segments"], aggregated=audio["text"])
+    return audio["segments"]
 
 
-def main():
-    claim = "California does not experience many earthquakes"
-    response = verify_claims_with_openai(claim)
-    links = get_source_links(claim)
-    print(response)
-    print(links)
-
-if __name__ == "__main__":
-    main()
-
-# @app.post("/fact_check")
-# def fact_check(speech: Speech) -> FactCheckResult:
-#     process_and_verify_claims(speech.text)
-#     return FactCheckResult(status=200, message="success", results=Decision(facts=["hello"], lies=["world"]))
-
+@app.post("/fact_check")
+def fact_check(video_url: str) -> list[dict]:
+    segments = transcribe_url(video_url)
+    return _fact_check(segments)
