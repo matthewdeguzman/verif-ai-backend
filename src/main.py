@@ -178,7 +178,7 @@ def parse_audio(audio_path: str) -> list[str]:
     config = dotenv_values(".env")
 
     load_dotenv()
-    with open("audio.mp3", "rb") as f:
+    with open(audio_path, "rb") as f:
         client = OpenAI(api_key=config.get("OPENAI_API_KEY"))
         transcript = client.audio.transcriptions.create(
             file=f,
